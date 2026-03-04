@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>WhatsApp Gateway</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+
+  <div class="container">
+    <div class="card">
+
+      <div class="logo">
+        🤖
+      </div>
+
+      <h2 id="title">Scan QR WhatsApp</h2>
+
+      <div class="qr-wrapper">
+        <img id="qr" />
+      </div>
+
+      <p id="status">Menunggu login...</p>
+
+      <div class="loader" id="loader"></div>
+
+    </div>
+  </div>
+
+  <script>
+    async function loadQR() {
+      try {
+        const res = await fetch('/wa/qr');
+        const data = await res.json();
+
+        const title = document.getElementById('title');
+        const qrImg = document.getElementById('qr');
+        const status = document.getElementById('status');
+        const loader = document.getElementById('loader');
+
+        if (data.connected) {
+          title.innerText = "WhatsApp Berhasil Terhubung ✅";
+          qrImg.style.display = "none";
+          loader.style.display = "none";
+          status.innerText = "Bot sudah aktif dan siap digunakan.";
+          status.classList.add("success");
+          return;
+        }
+
+        title.innerText = "Scan QR WhatsApp";
+        qrImg.style.display = "block";
+        loader.style.display = "block";
+        status.innerText = "Menunggu login...";
+        status.classList.remove("success");
+
+        if (data.qr) {
+          qrImg.src = data.qr;
+        }
+
+      } catch (err) {
+        console.error("Error:", err);
+      }
+    }
+
+    loadQR();
+    setInterval(loadQR, 500);
+  </script>
+
+</body>
+</html>
