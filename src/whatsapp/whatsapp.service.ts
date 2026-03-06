@@ -4,7 +4,7 @@ import makeWASocket, {
   useMultiFileAuthState,
   fetchLatestBaileysVersion,
 } from '@whiskeysockets/baileys';
-// import * as qrcode from 'qrcode-terminal';
+
 import * as qrcode from 'qrcode';
 import { AiService } from '../ai/ai.service';
 import * as fs from 'fs';
@@ -16,7 +16,6 @@ export class WhatsappService implements OnModuleInit {
   private isConnecting = false;
   private isConnected = false;
   private currentQr: string | null = null;
-  // private isConnected = false;
 
   private chatHistory: Record<string, string[]> = {};
 
@@ -44,30 +43,15 @@ export class WhatsappService implements OnModuleInit {
     this.sock.ev.on('connection.update', async (update) => {
       const { connection, lastDisconnect, qr } = update;
 
-      // if (qr) {
-      //   console.log('Scan QR ini:');
-      //   qrcode.generate(qr, { small: true });
-      // }
-
       if (qr) {
         console.log('QR received');
-
-        // Convert ke base64 image
         this.currentQr = await qrcode.toDataURL(qr);
       }
 
-      // if (connection === 'open') {
-      //   console.log('WhatsApp Connected ✅');
-      //   this.isConnecting = false;
-      //   this.isConnected = true;
-      // }
-
       if (connection === 'open') {
         console.log('WhatsApp Connected ✅');
-
         this.isConnecting = false;
         this.isConnected = true;
-
         this.currentQr = null;
       }
 
@@ -87,19 +71,16 @@ export class WhatsappService implements OnModuleInit {
         if (isLoggedOut) {
           console.log('Session expired. Deleting auth folder...');
 
-          // 🔥 HAPUS AUTH FOLDER
           const authPath = path.join(process.cwd(), 'auth');
           if (fs.existsSync(authPath)) {
             fs.rmSync(authPath, { recursive: true, force: true });
           }
 
           this.currentQr = null;
-
-          // 🔥 Connect ulang
           setTimeout(() => this.connect(), 3000);
         } else {
           console.log('Reconnecting...');
-          setTimeout(() => this.connect(), 3000); 
+          setTimeout(() => this.connect(), 3000);
         }
       }
     });
@@ -112,9 +93,8 @@ export class WhatsappService implements OnModuleInit {
         if (!msg.message) continue;
         if (msg.key.fromMe) continue;
 
-        // const sender = msg.key.remoteJid;
-        const sender =
-          msg.key.participant || msg.key.remoteJid;
+        const remoteJid = msg.key.remoteJid;
+        const sender = msg.key.participant || msg.key.remoteJid;
 
         const text =
           msg.message.conversation ||
@@ -128,66 +108,117 @@ export class WhatsappService implements OnModuleInit {
         console.log('Isi:', text);
         console.log('================================');
 
-        await this.handleIncomingMessage(sender, text);
+        const isGroup = remoteJid?.endsWith('@g.us');
+
+        if (isGroup) {
+          await this.handleGroupMessage(
+            remoteJid,
+            sender,
+            text,
+            msg,
+          );
+        } else {
+          await this.handleIncomingMessage(sender, text);
+        }
       }
     });
 
     this.sock.ev.on('creds.update', saveCreds);
   }
 
-  // ================= AUTO REPLY LOGIC =================
-  // ================= AUTO REPLY LOGIC =================
-  private async handleIncomingMessage(sender: string, text: string) {
+  // ================= GROUP MESSAGE =================
+  private async handleGroupMessage(
+    groupJid: string,
+    sender: string,
+    text: string,
+    msg: any,
+  ) {
+    const lower = text.toLowerCase();
+
+    const calledBobi = /(^|\s)bobi(\s|$|,|\?)/i.test(lower);
+
+    const isReply =
+      msg.message?.extendedTextMessage?.contextInfo?.quotedMessage;
+
+    if (!calledBobi && !isReply) {
+      return;
+    }
+
+    const role = this.getRoleFromSender(sender);
+
+    const cleanText = text.replace(/bobi/gi, '').trim();
+
+    const key = groupJid;
+
+    if (!this.chatHistory[key]) {
+      this.chatHistory[key] = [];
+    }
+
+    this.chatHistory[key].push(
+      `User (${role}) [${sender.split('@')[0]}]: ${cleanText}`,
+    );
+
+    // simpan max 20 pesan
+    this.chatHistory[key] = this.chatHistory[key].slice(-20);
+
+    const context = this.chatHistory[key].join('\n');
+
+    await this.sock.sendPresenceUpdate('composing', groupJid);
+
+    const aiReply = await this.aiService.generateReply(context);
+
+    const mentionText = `@${sender.split('@')[0]} ${aiReply}`;
+
+    this.chatHistory[key].push(`Bot: ${aiReply}`);
+
+    await this.sock.sendMessage(groupJid, {
+      text: mentionText,
+      mentions: [sender],
+    });
+  }
+
+  // ================= PRIVATE MESSAGE =================
+  private async handleIncomingMessage(
+    sender: string,
+    text: string,
+  ) {
     const lower = text.toLowerCase();
     const role = this.getRoleFromSender(sender);
 
-    // ================= COMMAND HANDLER =================
     if (lower === 'ping') {
-      await this.sock.sendMessage(sender, { text: 'pong 🏓' });
+      await this.sock.sendMessage(sender, {
+        text: 'pong 🏓',
+      });
       return;
     }
 
     if (lower === 'halo') {
-      await this.sock.sendMessage(sender, { text: `Halo ${role} 👋` });
+      await this.sock.sendMessage(sender, {
+        text: `Halo ${role} 👋`,
+      });
       return;
     }
 
-    // ================= INIT MEMORY =================
     if (!this.chatHistory[sender]) {
       this.chatHistory[sender] = [];
     }
 
-    // Simpan pesan user
     this.chatHistory[sender].push(`User (${role}): ${text}`);
 
-    // Batasi maksimal 10 pesan terakhir
-    this.chatHistory[sender] = this.chatHistory[sender].slice(-10);
+    this.chatHistory[sender] =
+      this.chatHistory[sender].slice(-10);
 
     const context = this.chatHistory[sender].join('\n');
 
-    // ================= TYPING INDICATOR =================
     await this.sock.sendPresenceUpdate('composing', sender);
 
-    // ================= AI GENERATE =================
-    const aiReply = await this.aiService.generateReply(context);
+    const aiReply =
+      await this.aiService.generateReply(context);
 
-    // 🔥 Bersihkan kalau AI ikut menambahkan prefix sendiri
-    // const cleanReply = aiReply.replace(/^(Baginda,|Rakyat Jelata,)\s*/i, '');
-    const cleanReply = aiReply
-      .replace(/baginda/gi, '')
-      .replace(/rakyat jelata/gi, '')
-      .replace(/^[,\s]+/, '')
-      .trim();
+    this.chatHistory[sender].push(`Bot: ${aiReply}`);
 
-    // 🔥 Tambahkan prefix sesuai role
-    const finalReply = `${role}, ${cleanReply}`;
-
-    // Simpan balasan bot
-    this.chatHistory[sender].push(`Bot: ${finalReply}`);
-
-    // Kirim ke user
     await this.sock.sendMessage(sender, {
-      text: finalReply,
+      text: aiReply,
     });
   }
 
@@ -197,9 +228,12 @@ export class WhatsappService implements OnModuleInit {
       throw new Error('WhatsApp belum terkoneksi');
     }
 
-    const jid = phone.replace(/\D/g, '') + '@s.whatsapp.net';
+    const jid =
+      phone.replace(/\D/g, '') + '@s.whatsapp.net';
 
-    await this.sock.sendMessage(jid, { text: message });
+    await this.sock.sendMessage(jid, {
+      text: message,
+    });
 
     return {
       status: 'success',
@@ -208,9 +242,7 @@ export class WhatsappService implements OnModuleInit {
     };
   }
 
-  private VIP_USERS = [
-  '273353294254203@lid'
-  ];
+  private VIP_USERS = ['273353294254203@lid'];
 
   private getRoleFromSender(sender: string): string {
     if (this.VIP_USERS.includes(sender)) {
@@ -226,7 +258,7 @@ export class WhatsappService implements OnModuleInit {
       connected: this.isConnected,
     };
   }
-loader
+
   getQr() {
     return this.currentQr;
   }
